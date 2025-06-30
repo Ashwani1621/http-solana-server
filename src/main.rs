@@ -107,47 +107,36 @@ struct VerifyMessageResponse {
     pubkey: String,
 }
 
-async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Json<Result<SuccessResponse<VerifyMessageResponse>, ErrorResponse>> {
+async fn verify_message(
+    Json(payload): Json<VerifyMessageRequest>
+) -> Json<Result<SuccessResponse<VerifyMessageResponse>, ErrorResponse>> {
+    // Decode public key from base58
     let pubkey_bytes = match bs58::decode(&payload.pubkey).into_vec() {
-        Ok(bytes) => bytes,
-        Err(_) => {
+        Ok(bytes) if bytes.len() == 32 => bytes,
+        _ => {
             return Json(Err(ErrorResponse {
                 success: false,
-                error: "Invalid base58 pubkey".into(),
+                error: "Invalid base58 pubkey or incorrect size".into(),
             }));
         }
     };
 
-    let pubkey = match PublicKey::from_bytes(&pubkey_bytes) {
-        Ok(pk) => pk,
-        Err(_) => {
-            return Json(Err(ErrorResponse {
-                success: false,
-                error: "PublicKey wrong size".into(),
-            }));
-        }
-    };
-
+    // Decode signature from base64
     let signature_bytes = match general_purpose::STANDARD.decode(&payload.signature) {
-        Ok(bytes) => bytes,
-        Err(_) => {
+        Ok(bytes) if bytes.len() == 64 => bytes,
+        _ => {
             return Json(Err(ErrorResponse {
                 success: false,
-                error: "Base64 decode failed".into(),
+                error: "Invalid base64 signature or incorrect size".into(),
             }));
         }
     };
 
-    let signature = match Signature::from_bytes(&signature_bytes) {
-        Ok(sig) => sig,
-        Err(_) => {
-            return Json(Err(ErrorResponse {
-                success: false,
-                error: "Signature wrong size".into(),
-            }));
-        }
-    };
+    // Convert to PublicKey and Signature
+    let pubkey = PublicKey::from_bytes(&pubkey_bytes).unwrap();
+    let signature = Signature::from_bytes(&signature_bytes).unwrap();
 
+    // Verify
     let is_valid = pubkey.verify(payload.message.as_bytes(), &signature).is_ok();
 
     Json(Ok(SuccessResponse {
