@@ -107,27 +107,63 @@ struct VerifyMessageResponse {
     pubkey: String,
 }
 
-async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Json<SuccessResponse<VerifyMessageResponse>> {
-    let pubkey_bytes = bs58::decode(&payload.pubkey).into_vec().unwrap();
-    let pubkey = PublicKey::from_bytes(&pubkey_bytes).unwrap();
+async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Json<Result<SuccessResponse<VerifyMessageResponse>, ErrorResponse>> {
+    let pubkey_bytes = match bs58::decode(&payload.pubkey).into_vec() {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Json(Err(ErrorResponse {
+                success: false,
+                error: "Invalid base58 pubkey".into(),
+            }));
+        }
+    };
 
-    let signature_bytes = general_purpose::STANDARD.decode(&payload.signature).unwrap();
-    let signature = Signature::from_bytes(&signature_bytes).unwrap();
+    let pubkey = match PublicKey::from_bytes(&pubkey_bytes) {
+        Ok(pk) => pk,
+        Err(_) => {
+            return Json(Err(ErrorResponse {
+                success: false,
+                error: "PublicKey wrong size".into(),
+            }));
+        }
+    };
+
+    let signature_bytes = match general_purpose::STANDARD.decode(&payload.signature) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Json(Err(ErrorResponse {
+                success: false,
+                error: "Base64 decode failed".into(),
+            }));
+        }
+    };
+
+    let signature = match Signature::from_bytes(&signature_bytes) {
+        Ok(sig) => sig,
+        Err(_) => {
+            return Json(Err(ErrorResponse {
+                success: false,
+                error: "Signature wrong size".into(),
+            }));
+        }
+    };
 
     let is_valid = pubkey.verify(payload.message.as_bytes(), &signature).is_ok();
 
-    Json(SuccessResponse {
+    Json(Ok(SuccessResponse {
         success: true,
         data: VerifyMessageResponse {
             valid: is_valid,
             message: payload.message,
             pubkey: payload.pubkey,
         },
-    })
+    }))
 }
+
 
 #[derive(Deserialize)]
 struct CreateTokenRequest {
+    #[serde(rename = "mintAuthority")]
     mint_authority: String,
     mint: String,
     decimals: u8,
