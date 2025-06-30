@@ -1901,6 +1901,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bs58 0.5.1",
+ "ed25519-dalek",
  "hyper",
  "serde",
  "serde_json",

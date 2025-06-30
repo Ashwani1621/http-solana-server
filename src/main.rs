@@ -1,10 +1,18 @@
-use axum::{routing::post, Json, Router};
+use axum::{routing::{get, post}, Json, Router};
 use base64::{engine::general_purpose, Engine as _};
 use bs58;
 use serde::{Deserialize, Serialize};
-use solana_sdk::signature::{Keypair, Signer};
+use solana_sdk::{
+    instruction::Instruction,
+    pubkey::Pubkey,
+    signature::{Keypair, Signer},
+    system_instruction,
+};
+use spl_token::instruction as token_instruction;
 use tokio::net::TcpListener;
 use axum::serve;
+use std::str::FromStr;
+use ed25519_dalek::{Verifier, PublicKey, Signature};
 
 #[derive(Serialize)]
 struct SuccessResponse<T> {
@@ -22,6 +30,10 @@ struct ErrorResponse {
 struct KeypairData {
     pubkey: String,
     secret: String,
+}
+
+async fn root() -> &'static str {
+    "✅ Solana Rust Server is running!"
 }
 
 async fn generate_keypair() -> Json<SuccessResponse<KeypairData>> {
@@ -81,11 +93,143 @@ async fn sign_message(Json(payload): Json<SignMessageRequest>) -> Json<Result<Su
     }))
 }
 
+#[derive(Deserialize)]
+struct VerifyMessageRequest {
+    message: String,
+    signature: String,
+    pubkey: String,
+}
+
+#[derive(Serialize)]
+struct VerifyMessageResponse {
+    valid: bool,
+    message: String,
+    pubkey: String,
+}
+
+async fn verify_message(Json(payload): Json<VerifyMessageRequest>) -> Json<SuccessResponse<VerifyMessageResponse>> {
+    let pubkey_bytes = bs58::decode(&payload.pubkey).into_vec().unwrap();
+    let pubkey = PublicKey::from_bytes(&pubkey_bytes).unwrap();
+
+    let signature_bytes = general_purpose::STANDARD.decode(&payload.signature).unwrap();
+    let signature = Signature::from_bytes(&signature_bytes).unwrap();
+
+    let is_valid = pubkey.verify(payload.message.as_bytes(), &signature).is_ok();
+
+    Json(SuccessResponse {
+        success: true,
+        data: VerifyMessageResponse {
+            valid: is_valid,
+            message: payload.message,
+            pubkey: payload.pubkey,
+        },
+    })
+}
+
+#[derive(Deserialize)]
+struct CreateTokenRequest {
+    mint_authority: String,
+    mint: String,
+    decimals: u8,
+}
+
+async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Json<SuccessResponse<Instruction>> {
+    let mint = Pubkey::from_str(&payload.mint).unwrap();
+    let mint_authority = Pubkey::from_str(&payload.mint_authority).unwrap();
+
+    let ix = token_instruction::initialize_mint(
+        &spl_token::ID,
+        &mint,
+        &mint_authority,
+        None,
+        payload.decimals,
+    ).unwrap();
+
+    Json(SuccessResponse {
+        success: true,
+        data: ix,
+    })
+}
+
+#[derive(Deserialize)]
+struct MintTokenRequest {
+    mint: String,
+    destination: String,
+    authority: String,
+    amount: u64,
+}
+
+async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Json<SuccessResponse<Instruction>> {
+    let ix = token_instruction::mint_to(
+        &spl_token::ID,
+        &Pubkey::from_str(&payload.mint).unwrap(),
+        &Pubkey::from_str(&payload.destination).unwrap(),
+        &Pubkey::from_str(&payload.authority).unwrap(),
+        &[],
+        payload.amount,
+    ).unwrap();
+
+    Json(SuccessResponse {
+        success: true,
+        data: ix,
+    })
+}
+
+#[derive(Deserialize)]
+struct SendSolRequest {
+    from: String,
+    to: String,
+    lamports: u64,
+}
+
+async fn send_sol(Json(payload): Json<SendSolRequest>) -> Json<SuccessResponse<Instruction>> {
+    let ix = system_instruction::transfer(
+        &Pubkey::from_str(&payload.from).unwrap(),
+        &Pubkey::from_str(&payload.to).unwrap(),
+        payload.lamports,
+    );
+
+    Json(SuccessResponse {
+        success: true,
+        data: ix,
+    })
+}
+
+#[derive(Deserialize)]
+struct SendTokenRequest {
+    destination: String,
+    mint: String,
+    owner: String,
+    amount: u64,
+}
+
+async fn send_token(Json(payload): Json<SendTokenRequest>) -> Json<SuccessResponse<Instruction>> {
+    let ix = token_instruction::transfer(
+        &spl_token::ID,
+        &Pubkey::from_str(&payload.mint).unwrap(),
+        &Pubkey::from_str(&payload.destination).unwrap(),
+        &Pubkey::from_str(&payload.owner).unwrap(),
+        &[],
+        payload.amount,
+    ).unwrap();
+
+    Json(SuccessResponse {
+        success: true,
+        data: ix,
+    })
+}
+
 #[tokio::main]
 async fn main() {
     let app = Router::new()
+        .route("/", get(root))
         .route("/keypair", post(generate_keypair))
-        .route("/message/sign", post(sign_message));
+        .route("/message/sign", post(sign_message))
+        .route("/message/verify", post(verify_message))
+        .route("/token/create", post(create_token))
+        .route("/token/mint", post(mint_token))
+        .route("/send/sol", post(send_sol))
+        .route("/send/token", post(send_token));
 
     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("🚀 Server running at http://0.0.0.0:3000");
