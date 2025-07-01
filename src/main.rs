@@ -109,7 +109,7 @@ struct VerifyMessageResponse {
 
 async fn verify_message(
     Json(payload): Json<VerifyMessageRequest>
-) -> Json<Result<SuccessResponse<VerifyMessageResponse>, ErrorResponse>> {
+    ) -> Json<Result<SuccessResponse<VerifyMessageResponse>, ErrorResponse>> {
     // Decode public key from base58
     let pubkey_bytes = match bs58::decode(&payload.pubkey).into_vec() {
         Ok(bytes) if bytes.len() == 32 => bytes,
@@ -150,29 +150,74 @@ async fn verify_message(
 }
 
 
-#[derive(Deserialize)]
+
+#[derive(Debug, Deserialize)]
 struct CreateTokenRequest {
+    mint: String,
+
     #[serde(rename = "mintAuthority")]
     mint_authority: String,
-    mint: String,
+
     decimals: u8,
 }
 
-async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Json<SuccessResponse<Instruction>> {
-    let mint = Pubkey::from_str(&payload.mint).unwrap();
-    let mint_authority = Pubkey::from_str(&payload.mint_authority).unwrap();
 
-    let ix = token_instruction::initialize_mint(
+#[derive(Debug, Serialize)]
+struct AccountMetaResponse {
+    pubkey: String,
+    is_signer: bool,
+    is_writable: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateTokenResponse {
+    success: bool,
+    data: InstructionData,
+}
+
+#[derive(Debug, Serialize)]
+struct InstructionData {
+    program_id: String,
+    accounts: Vec<AccountMetaResponse>,
+    instruction_data: String,
+}
+
+async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Json<CreateTokenResponse> {
+    // Parse pubkeys from base58
+    let mint_pubkey = Pubkey::from_str(&payload.mint)
+        .expect("Invalid base58 mint pubkey");
+
+    let mint_authority_pubkey = Pubkey::from_str(&payload.mint_authority)
+        .expect("Invalid base58 mintAuthority pubkey");
+
+    // Generate initialize_mint instruction
+    let ix: Instruction = token_instruction::initialize_mint(
         &spl_token::ID,
-        &mint,
-        &mint_authority,
+        &mint_pubkey,
+        &mint_authority_pubkey,
         None,
         payload.decimals,
-    ).unwrap();
+    ).expect("Failed to build instruction");
 
-    Json(SuccessResponse {
+    // Convert binary instruction data to base64
+    let instruction_data_base64 = general_purpose::STANDARD.encode(&ix.data);
+
+    // Convert accounts into serializable format
+    let accounts: Vec<AccountMetaResponse> = ix.accounts.into_iter().map(|meta| {
+        AccountMetaResponse {
+            pubkey: meta.pubkey.to_string(),
+            is_signer: meta.is_signer,
+            is_writable: meta.is_writable,
+        }
+    }).collect();
+
+    Json(CreateTokenResponse {
         success: true,
-        data: ix,
+        data: InstructionData {
+            program_id: ix.program_id.to_string(),
+            accounts,
+            instruction_data: instruction_data_base64,
+        }
     })
 }
 
