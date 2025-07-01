@@ -13,6 +13,7 @@ use tokio::net::TcpListener;
 use axum::serve;
 use std::str::FromStr;
 use ed25519_dalek::{Verifier, PublicKey, Signature};
+use axum::http::StatusCode;
 
 #[derive(Serialize)]
 struct SuccessResponse<T> {
@@ -169,11 +170,7 @@ struct AccountMetaResponse {
     is_writable: bool,
 }
 
-#[derive(Debug, Serialize)]
-struct CreateTokenResponse {
-    success: bool,
-    data: InstructionData,
-}
+
 
 #[derive(Debug, Serialize)]
 struct InstructionData {
@@ -182,43 +179,74 @@ struct InstructionData {
     instruction_data: String,
 }
 
-async fn create_token(Json(payload): Json<CreateTokenRequest>) -> Json<CreateTokenResponse> {
-    // Parse pubkeys from base58
-    let mint_pubkey = Pubkey::from_str(&payload.mint)
-        .expect("Invalid base58 mint pubkey");
+async fn create_token(
+    Json(payload): Json<CreateTokenRequest>,
+) -> Result<Json<SuccessResponse<InstructionData>>, (StatusCode, Json<ErrorResponse>)> {
+    // Parse mint pubkey
+    let mint_pubkey = Pubkey::from_str(&payload.mint).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: "Invalid mint public key".to_string(),
+            }),
+        )
+    })?;
 
-    let mint_authority_pubkey = Pubkey::from_str(&payload.mint_authority)
-        .expect("Invalid base58 mintAuthority pubkey");
+    // Parse mint authority pubkey
+    let mint_authority_pubkey = Pubkey::from_str(&payload.mint_authority).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: "Invalid mintAuthority public key".to_string(),
+            }),
+        )
+    })?;
 
-    // Generate initialize_mint instruction
+    // Generate the instruction
     let ix: Instruction = token_instruction::initialize_mint(
         &spl_token::ID,
         &mint_pubkey,
         &mint_authority_pubkey,
         None,
         payload.decimals,
-    ).expect("Failed to build instruction");
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: format!("Failed to create instruction: {}", e),
+            }),
+        )
+    })?;
 
-    // Convert binary instruction data to base64
+    // Encode instruction data as base64
     let instruction_data_base64 = general_purpose::STANDARD.encode(&ix.data);
 
-    // Convert accounts into serializable format
-    let accounts: Vec<AccountMetaResponse> = ix.accounts.into_iter().map(|meta| {
-        AccountMetaResponse {
+    // Convert account metas
+    let accounts: Vec<AccountMetaResponse> = ix
+        .accounts
+        .into_iter()
+        .map(|meta| AccountMetaResponse {
             pubkey: meta.pubkey.to_string(),
             is_signer: meta.is_signer,
             is_writable: meta.is_writable,
-        }
-    }).collect();
+        })
+        .collect();
 
-    Json(CreateTokenResponse {
+    // Create final structured response
+    let response = InstructionData {
+        program_id: ix.program_id.to_string(),
+        accounts,
+        instruction_data: instruction_data_base64,
+    };
+
+    Ok(Json(SuccessResponse {
         success: true,
-        data: InstructionData {
-            program_id: ix.program_id.to_string(),
-            accounts,
-            instruction_data: instruction_data_base64,
-        }
-    })
+        data: response,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -229,20 +257,92 @@ struct MintTokenRequest {
     amount: u64,
 }
 
-async fn mint_token(Json(payload): Json<MintTokenRequest>) -> Json<SuccessResponse<Instruction>> {
-    let ix = token_instruction::mint_to(
+
+#[derive(Serialize)]
+struct InstructionResponse {
+    program_id: String,
+    accounts: Vec<AccountMetaResponse>,
+    instruction_data: String,
+}
+
+async fn mint_token(
+    Json(payload): Json<MintTokenRequest>,
+) -> Result<Json<SuccessResponse<InstructionResponse>>, (StatusCode, Json<ErrorResponse>)> {
+    // Parse pubkeys
+    let mint = Pubkey::from_str(&payload.mint).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: "Invalid mint public key".to_string(),
+            }),
+        )
+    })?;
+
+    let destination = Pubkey::from_str(&payload.destination).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: "Invalid destination public key".to_string(),
+            }),
+        )
+    })?;
+
+    let authority = Pubkey::from_str(&payload.authority).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: "Invalid authority public key".to_string(),
+            }),
+        )
+    })?;
+
+    // Build the instruction
+    let ix: Instruction = token_instruction::mint_to(
         &spl_token::ID,
-        &Pubkey::from_str(&payload.mint).unwrap(),
-        &Pubkey::from_str(&payload.destination).unwrap(),
-        &Pubkey::from_str(&payload.authority).unwrap(),
+        &mint,
+        &destination,
+        &authority,
         &[],
         payload.amount,
-    ).unwrap();
+    )
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                success: false,
+                error: format!("Failed to create instruction: {}", e),
+            }),
+        )
+    })?;
 
-    Json(SuccessResponse {
+    // Convert accounts
+    let accounts: Vec<AccountMetaResponse> = ix
+        .accounts
+        .into_iter()
+        .map(|meta| AccountMetaResponse {
+            pubkey: meta.pubkey.to_string(),
+            is_signer: meta.is_signer,
+            is_writable: meta.is_writable,
+        })
+        .collect();
+
+    // Encode instruction data
+    let instruction_data = general_purpose::STANDARD.encode(&ix.data);
+
+    // Final structured response
+    let response = InstructionResponse {
+        program_id: ix.program_id.to_string(),
+        accounts,
+        instruction_data,
+    };
+
+    Ok(Json(SuccessResponse {
         success: true,
-        data: ix,
-    })
+        data: response,
+    }))
 }
 
 #[derive(Deserialize)]
